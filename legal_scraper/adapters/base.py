@@ -76,7 +76,7 @@ class BaseAdapter(ABC):
         List all case IDs matching a citation pattern.
         
         Args:
-            citation_prefix: Citation prefix (e.g., "2024 SCMR")
+            citation_prefix: Citation prefix (e.g., "2024 SC")
         
         Returns:
             List of case IDs.

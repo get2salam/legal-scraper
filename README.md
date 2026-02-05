@@ -147,7 +147,7 @@ The scraper uses variable delays to mimic human browsing:
 from legal_scraper.analytics import extract_citations
 
 citations = extract_citations(case_text)
-# Returns: ['Article 199', 'Section 302 PPC', '2023 SCMR 445']
+# Returns: ['Article 14', 'Section 302', '2023 SC 445']
 ```
 
 ### Statistics

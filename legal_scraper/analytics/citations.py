@@ -14,7 +14,7 @@ class CitationExtractor:
     Extract legal citations from text.
     
     Supports:
-    - Case citations (e.g., "2024 SCMR 445")
+    - Case citations (e.g., "2024 SC 445")
     - Statute references (e.g., "Section 302 PPC")
     - Constitutional articles (e.g., "Article 199")
     """
