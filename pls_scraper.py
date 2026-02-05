@@ -55,10 +55,17 @@ PLS_PASS = os.environ.get("PLS_PASS", "")
 
 # Rate limiting
 DAILY_REQUEST_LIMIT = 500  # Authorized access, scrape responsibly
-MIN_DELAY_SECONDS = 8
-MAX_DELAY_SECONDS = 15
-BREAK_AFTER_REQUESTS = 30
-BREAK_DURATION_SECONDS = 120  # 2 minutes
+# More human-like timing (variable delays)
+MIN_DELAY_SECONDS = 5
+MAX_DELAY_SECONDS = 20
+READING_PAUSE_CHANCE = 0.12  # 12% chance of longer "reading" pause
+READING_PAUSE_MIN = 30
+READING_PAUSE_MAX = 90
+# Variable breaks (not fixed intervals)
+BREAK_AFTER_REQUESTS_MIN = 22
+BREAK_AFTER_REQUESTS_MAX = 38
+BREAK_DURATION_MIN = 90
+BREAK_DURATION_MAX = 180
 
 # Data directories
 DATA_DIR = Path("data/pakistanlawsite")
@@ -292,18 +299,34 @@ class PLSScraper:
         return True
 
     def _delay(self):
-        """Random delay between requests."""
+        """Human-like random delay between requests."""
+        # Base delay with wider variance
         delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
+        
+        # Occasionally simulate "reading" a case (longer pause)
+        if random.random() < READING_PAUSE_CHANCE:
+            reading_time = random.uniform(READING_PAUSE_MIN, READING_PAUSE_MAX)
+            logger.info(f"Simulating reading pause ({reading_time:.0f}s)...")
+            delay = reading_time
+        
         logger.debug(f"Waiting {delay:.1f}s...")
         time.sleep(delay)
 
     def _maybe_break(self):
-        """Take a break every N requests."""
+        """Take breaks at random intervals (more human-like)."""
         self.request_count += 1
-        if self.request_count > 0 and self.request_count % BREAK_AFTER_REQUESTS == 0:
-            mins = BREAK_DURATION_SECONDS / 60
-            logger.info(f"Taking a {mins:.0f} minute break after {self.request_count} requests...")
-            time.sleep(BREAK_DURATION_SECONDS)
+        
+        # Initialize random break threshold
+        if not hasattr(self, '_next_break_at'):
+            self._next_break_at = random.randint(BREAK_AFTER_REQUESTS_MIN, BREAK_AFTER_REQUESTS_MAX)
+        
+        if self.request_count >= self._next_break_at:
+            duration = random.uniform(BREAK_DURATION_MIN, BREAK_DURATION_MAX)
+            mins = duration / 60
+            logger.info(f"Taking a {mins:.1f} minute break after {self.request_count} requests...")
+            time.sleep(duration)
+            # Set next break at a random interval from now
+            self._next_break_at = self.request_count + random.randint(BREAK_AFTER_REQUESTS_MIN, BREAK_AFTER_REQUESTS_MAX)
 
     def _request(self, method: str, url: str, data: dict = None,
                  params: dict = None, retries: int = 3) -> Optional[requests.Response]:
@@ -644,6 +667,14 @@ class PLSScraper:
             f.write(json.dumps(case_data, ensure_ascii=False) + "\n")
         logger.info(f"  Appended to {jsonl_path.name}")
 
+    def _save_individual_json(self, case_name: str, case_data: dict):
+        """Save case as individual JSON file (for easy inspection/debugging)."""
+        CASES_DIR.mkdir(parents=True, exist_ok=True)
+        json_path = CASES_DIR / f"{case_name}.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(case_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"  Saved to {json_path.name}")
+
     # ── High-Level Operations ─────────────────────────────────────────────
 
     def enumerate_book_year(self, book: str, year: int) -> list:
@@ -765,6 +796,9 @@ class PLSScraper:
 
             # Append to JSONL file
             self._append_to_jsonl(book, year, record)
+            
+            # Also save individual JSON file (for easy inspection/debugging)
+            self._save_individual_json(case_name, record)
 
             # Mark as fetched in progress tracker
             self.progress.mark_case_fetched(case_name)
