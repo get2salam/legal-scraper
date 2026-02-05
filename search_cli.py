@@ -202,7 +202,7 @@ def main():
     elif args.interactive or not args.query:
         interactive_mode(cases)
     else:
-        results = search(cases, args.query, args.book, args.year, args.limit)
+        results = search(cases, args.query, book=args.book, year=args.year, limit=args.limit)
         if results:
             print(f"\nFound {len(results)} results:")
             for case, score in results:
