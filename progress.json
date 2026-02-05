@@ -1,0 +1,46 @@
+{
+  "pakistan_code": {
+    "total_discovered": 1030,
+    "pdfs_downloaded": 50,
+    "texts_extracted": 50,
+    "sections_parsed": 937,
+    "embeddings_generated": 2140,
+    "last_run": "2026-02-03T19:29:41.000000",
+    "daily_limit": 20
+  },
+  "na_acts": {
+    "total_discovered": 94,
+    "pdfs_downloaded": 0,
+    "texts_extracted": 0,
+    "last_run": null,
+    "daily_limit": 20
+  },
+  "pakistanlawsite": {
+    "total_estimated": null,
+    "cases_scraped": 0,
+    "last_run": null,
+    "daily_limit": 30,
+    "site_structure": null,
+    "credentials_tested": false
+  },
+  "settings": {
+    "min_delay_seconds": 3,
+    "max_delay_seconds": 8,
+    "break_after_requests": 50,
+    "break_duration_minutes": 5
+  },
+  "daily_logs": [
+    {
+      "date": "2026-02-03",
+      "source": "pakistan_code",
+      "downloaded": 20,
+      "total_pdfs": 30
+    },
+    {
+      "date": "2026-02-03",
+      "source": "pakistan_code",
+      "downloaded": 20,
+      "total_pdfs": 50
+    }
+  ]
+}
