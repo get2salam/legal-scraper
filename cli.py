@@ -18,6 +18,8 @@ load_dotenv()
 
 from legal_scraper import Scraper
 from legal_scraper.analytics import extract_citations, generate_stats
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,6 +97,43 @@ def cmd_fetch(args):
             print(f"\nFetched {fetched} cases")
 
 
+def cmd_parallel_fetch(args):
+    """Fetch cases in parallel with progress bar."""
+    with Scraper(adapter=args.adapter) as scraper:
+        if not scraper.authenticate():
+            print("Authentication failed")
+            return 1
+        
+        case_ids = scraper.enumerate(year=args.year)
+        print(f"\nFound {len(case_ids)} cases for {args.year}")
+        
+        if args.limit:
+            case_ids = case_ids[:args.limit]
+        
+        fetched = 0
+        failed = 0
+        
+        def fetch_one(case_id):
+            try:
+                return scraper.fetch(case_id)
+            except Exception:
+                return None
+        
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {executor.submit(fetch_one, cid): cid for cid in case_ids}
+            
+            with tqdm(total=len(case_ids), desc="Fetching") as pbar:
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        fetched += 1
+                    else:
+                        failed += 1
+                    pbar.update(1)
+        
+        print(f"\n✓ Fetched: {fetched} | ✗ Failed: {failed}")
+
+
 def cmd_analyze(args):
     """Run analytics."""
     if args.type == "stats":
@@ -161,6 +200,13 @@ Examples:
     sub.add_argument("--year", "-y", type=int, help="Fetch all for year")
     sub.add_argument("--limit", "-l", type=int, default=100, help="Max to fetch")
     sub.set_defaults(func=cmd_fetch)
+    
+    # Parallel Fetch
+    sub = subparsers.add_parser("parallel-fetch", help="Fetch cases in parallel")
+    sub.add_argument("--year", "-y", type=int, required=True, help="Year")
+    sub.add_argument("--limit", "-l", type=int, help="Max to fetch")
+    sub.add_argument("--workers", "-w", type=int, default=5, help="Parallel workers (default: 5)")
+    sub.set_defaults(func=cmd_parallel_fetch)
     
     # Analyze
     sub = subparsers.add_parser("analyze", help="Run analytics")
