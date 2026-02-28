@@ -9,17 +9,17 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
-from .validator import CaseValidator, ValidationResult, Severity
+from .validator import CaseValidator, Severity, ValidationResult
 
 
 @dataclass
 class QualityReport:
     """Aggregated quality report for a dataset."""
+
     generated_at: str
     total_cases: int
     valid_cases: int
@@ -45,9 +45,7 @@ class QualityReport:
                 "pass_rate": round(self.pass_rate, 4),
                 "avg_completeness": round(self.avg_completeness, 4),
             },
-            "field_completeness": {
-                k: round(v, 4) for k, v in self.field_completeness.items()
-            },
+            "field_completeness": {k: round(v, 4) for k, v in self.field_completeness.items()},
             "severity_counts": self.severity_counts,
             "top_issues": self.top_issues,
             "completeness_distribution": self.completeness_distribution,
@@ -89,7 +87,7 @@ class QualityReport:
             for issue in self.top_issues[:10]:
                 lines.append(
                     f"  [{issue['severity']}] {issue['field']}: "
-                    f"{issue['message']} (×{issue['count']})"
+                    f"{issue['message']} (x{issue['count']})"
                 )
 
         return "\n".join(lines)
@@ -132,9 +130,7 @@ class QualityReporter:
         results = self.validator.validate_batch(cases)
         return self._aggregate(results)
 
-    def analyze_results(
-        self, results: list[ValidationResult]
-    ) -> QualityReport:
+    def analyze_results(self, results: list[ValidationResult]) -> QualityReport:
         """
         Generate a report from pre-computed validation results.
 
@@ -165,9 +161,7 @@ class QualityReporter:
         valid_count = sum(1 for r in results if r.valid)
 
         # Average completeness
-        avg_completeness = (
-            sum(r.completeness_score for r in results) / total
-        )
+        avg_completeness = sum(r.completeness_score for r in results) / total
 
         # Per-field completeness (average across all cases)
         field_totals: dict[str, float] = defaultdict(float)
@@ -178,8 +172,7 @@ class QualityReporter:
                 field_counts[field_name] += 1
 
         field_completeness = {
-            name: field_totals[name] / field_counts[name]
-            for name in field_totals
+            name: field_totals[name] / field_counts[name] for name in field_totals
         }
 
         # Severity counts
@@ -205,8 +198,7 @@ class QualityReporter:
                     }
 
         top_issues = [
-            {**issue_details[key], "count": count}
-            for key, count in issue_groups.most_common(20)
+            {**issue_details[key], "count": count} for key, count in issue_groups.most_common(20)
         ]
 
         # Completeness distribution (buckets)
@@ -269,17 +261,13 @@ class QualityReporter:
             "completeness": {
                 "before": round(before.avg_completeness, 4),
                 "after": round(after.avg_completeness, 4),
-                "delta": round(
-                    after.avg_completeness - before.avg_completeness, 4
-                ),
+                "delta": round(after.avg_completeness - before.avg_completeness, 4),
             },
             "field_changes": {
                 field: {
                     "before": round(before.field_completeness.get(field, 0), 4),
                     "after": round(score, 4),
-                    "delta": round(
-                        score - before.field_completeness.get(field, 0), 4
-                    ),
+                    "delta": round(score - before.field_completeness.get(field, 0), 4),
                 }
                 for field, score in after.field_completeness.items()
             },

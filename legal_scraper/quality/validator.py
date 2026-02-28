@@ -10,11 +10,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class Severity(str, Enum):
     """Validation issue severity."""
+
     ERROR = "error"
     WARNING = "warning"
     INFO = "info"
@@ -23,6 +27,7 @@ class Severity(str, Enum):
 @dataclass
 class ValidationIssue:
     """A single validation issue found in a case."""
+
     field: str
     severity: Severity
     message: str
@@ -35,6 +40,7 @@ class ValidationIssue:
 @dataclass
 class ValidationResult:
     """Result of validating a single case."""
+
     case_id: str
     valid: bool
     issues: list[ValidationIssue] = field(default_factory=list)
@@ -64,22 +70,21 @@ class ValidationResult:
                 }
                 for i in self.issues
             ],
-            "field_scores": {
-                k: round(v, 3) for k, v in self.field_scores.items()
-            },
+            "field_scores": {k: round(v, 3) for k, v in self.field_scores.items()},
         }
 
 
 @dataclass
 class FieldSpec:
     """Specification for a case field."""
+
     name: str
     required: bool = False
     field_type: type | tuple[type, ...] = str
-    min_length: Optional[int] = None
-    max_length: Optional[int] = None
-    pattern: Optional[str] = None
-    custom_check: Optional[Callable[[Any], Optional[str]]] = None
+    min_length: int | None = None
+    max_length: int | None = None
+    pattern: str | None = None
+    custom_check: Callable[[Any], str | None] | None = None
     weight: float = 1.0  # Weight for completeness scoring
 
 
@@ -204,10 +209,7 @@ class CaseValidator:
             issues.extend(field_issues)
 
         # Compute weighted completeness
-        weighted_sum = sum(
-            field_scores.get(spec.name, 0.0) * spec.weight
-            for spec in self.schema
-        )
+        weighted_sum = sum(field_scores.get(spec.name, 0.0) * spec.weight for spec in self.schema)
         completeness = weighted_sum / total_weight if total_weight > 0 else 0.0
 
         # Check for unknown fields (info-level)
@@ -240,9 +242,7 @@ class CaseValidator:
         """Validate multiple cases."""
         return [self.validate(case) for case in cases]
 
-    def _validate_field(
-        self, case: dict, spec: FieldSpec
-    ) -> tuple[float, list[ValidationIssue]]:
+    def _validate_field(self, case: dict, spec: FieldSpec) -> tuple[float, list[ValidationIssue]]:
         """
         Validate a single field against its spec.
 
@@ -273,10 +273,7 @@ class CaseValidator:
                 ValidationIssue(
                     field=spec.name,
                     severity=severity,
-                    message=(
-                        f"Expected type {spec.field_type}, "
-                        f"got {type(value).__name__}"
-                    ),
+                    message=(f"Expected type {spec.field_type}, got {type(value).__name__}"),
                     value=type(value).__name__,
                 )
             )
@@ -288,14 +285,8 @@ class CaseValidator:
                 issues.append(
                     ValidationIssue(
                         field=spec.name,
-                        severity=(
-                            Severity.ERROR if spec.required
-                            else Severity.WARNING
-                        ),
-                        message=(
-                            f"Too short: {len(value)} chars "
-                            f"(min: {spec.min_length})"
-                        ),
+                        severity=(Severity.ERROR if spec.required else Severity.WARNING),
+                        message=(f"Too short: {len(value)} chars (min: {spec.min_length})"),
                         value=len(value),
                     )
                 )
@@ -307,27 +298,23 @@ class CaseValidator:
                     ValidationIssue(
                         field=spec.name,
                         severity=Severity.WARNING,
-                        message=(
-                            f"Too long: {len(value)} chars "
-                            f"(max: {spec.max_length})"
-                        ),
+                        message=(f"Too long: {len(value)} chars (max: {spec.max_length})"),
                         value=len(value),
                     )
                 )
                 return 0.9, issues
 
         # Pattern check
-        if spec.pattern and isinstance(value, str):
-            if not re.search(spec.pattern, value):
-                issues.append(
-                    ValidationIssue(
-                        field=spec.name,
-                        severity=Severity.WARNING,
-                        message=f"Does not match expected pattern",
-                        value=value[:100],
-                    )
+        if spec.pattern and isinstance(value, str) and not re.search(spec.pattern, value):
+            issues.append(
+                ValidationIssue(
+                    field=spec.name,
+                    severity=Severity.WARNING,
+                    message="Does not match expected pattern",
+                    value=value[:100],
                 )
-                return 0.7, issues
+            )
+            return 0.7, issues
 
         # Custom check
         if spec.custom_check:
@@ -391,14 +378,14 @@ def check_text_quality(text: str) -> dict:
 
     words = text.split()
     word_count = len(words)
-    sentences = re.split(r'[.!?]+', text)
+    sentences = re.split(r"[.!?]+", text)
     sentence_count = len([s for s in sentences if s.strip()])
 
     # Check for common scraping artifacts
     artifacts = {
-        "excessive_whitespace": bool(re.search(r'\s{10,}', text)),
-        "html_tags": bool(re.search(r'<[a-zA-Z][^>]*>', text)),
-        "encoding_errors": bool(re.search(r'[ï¿½â€™â€œ]', text)),
+        "excessive_whitespace": bool(re.search(r"\s{10,}", text)),
+        "html_tags": bool(re.search(r"<[a-zA-Z][^>]*>", text)),
+        "encoding_errors": bool(re.search(r"[ï¿½â€™â€œ]", text)),
         "truncated": text.rstrip().endswith("...") or word_count < 50,
         "boilerplate_heavy": _boilerplate_ratio(text) > 0.3,
     }
@@ -418,9 +405,7 @@ def check_text_quality(text: str) -> dict:
     return {
         "word_count": word_count,
         "sentence_count": sentence_count,
-        "avg_sentence_length": (
-            round(word_count / sentence_count, 1) if sentence_count else 0
-        ),
+        "avg_sentence_length": (round(word_count / sentence_count, 1) if sentence_count else 0),
         "artifacts": artifacts,
         "artifact_count": artifact_count,
         "quality_score": round(score, 3),

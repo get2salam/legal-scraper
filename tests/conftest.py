@@ -4,16 +4,9 @@ Shared test fixtures for legal_scraper tests.
 Provides sample data, mock adapters, and temporary directories.
 """
 
-import json
-import os
-import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock
-
 import pytest
 
 from legal_scraper.adapters.base import BaseAdapter
-
 
 # ---------------------------------------------------------------------------
 # Sample case data

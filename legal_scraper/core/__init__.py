@@ -1,7 +1,7 @@
 """Core scraper functionality."""
 
 from .scraper import Scraper
-from .timing import HumanTiming
 from .storage import Storage
+from .timing import HumanTiming
 
-__all__ = ["Scraper", "HumanTiming", "Storage"]
+__all__ = ["HumanTiming", "Scraper", "Storage"]

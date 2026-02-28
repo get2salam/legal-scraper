@@ -8,10 +8,7 @@ resume support, and edge cases.
 import json
 from pathlib import Path
 
-import pytest
-
 from legal_scraper.core.storage import Storage
-
 
 # ---------------------------------------------------------------------------
 # Initialisation

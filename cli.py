@@ -9,22 +9,20 @@ import argparse
 import json
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from dotenv import load_dotenv
+from tqdm import tqdm
+
+from legal_scraper import Scraper
+from legal_scraper.analytics import generate_stats
 
 # Load environment
 load_dotenv()
 
-from legal_scraper import Scraper
-from legal_scraper.analytics import extract_citations, generate_stats
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
-
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%H:%M:%S'
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
 )
 
 
@@ -46,15 +44,15 @@ def cmd_search(args):
         if not scraper.authenticate():
             print("Authentication failed")
             return 1
-        
+
         results = scraper.search(args.query, limit=args.limit)
-        
+
         print(f"\nFound {len(results)} cases:\n")
-        for case in results[:args.limit]:
+        for case in results[: args.limit]:
             print(f"  [{case.get('id')}] {case.get('title', 'No title')}")
-        
+
         if args.output:
-            with open(args.output, 'w') as f:
+            with open(args.output, "w") as f:
                 json.dump(results, f, indent=2)
             print(f"\nSaved to {args.output}")
 
@@ -65,9 +63,9 @@ def cmd_enumerate(args):
         if not scraper.authenticate():
             print("Authentication failed")
             return 1
-        
+
         case_ids = scraper.enumerate(year=args.year)
-        
+
         print(f"\nFound {len(case_ids)} cases for {args.year}:\n")
         for case_id in case_ids[:10]:
             print(f"  {case_id}")
@@ -81,7 +79,7 @@ def cmd_fetch(args):
         if not scraper.authenticate():
             print("Authentication failed")
             return 1
-        
+
         if args.id:
             # Fetch single case
             case = scraper.fetch(args.id)
@@ -89,7 +87,7 @@ def cmd_fetch(args):
                 print(json.dumps(case, indent=2))
             else:
                 print(f"Case not found: {args.id}")
-        
+
         elif args.year:
             # Fetch all cases for year
             case_ids = scraper.enumerate(year=args.year)
@@ -103,25 +101,25 @@ def cmd_parallel_fetch(args):
         if not scraper.authenticate():
             print("Authentication failed")
             return 1
-        
+
         case_ids = scraper.enumerate(year=args.year)
         print(f"\nFound {len(case_ids)} cases for {args.year}")
-        
+
         if args.limit:
-            case_ids = case_ids[:args.limit]
-        
+            case_ids = case_ids[: args.limit]
+
         fetched = 0
         failed = 0
-        
+
         def fetch_one(case_id):
             try:
                 return scraper.fetch(case_id)
             except Exception:
                 return None
-        
+
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {executor.submit(fetch_one, cid): cid for cid in case_ids}
-            
+
             with tqdm(total=len(case_ids), desc="Fetching") as pbar:
                 for future in as_completed(futures):
                     result = future.result()
@@ -130,7 +128,7 @@ def cmd_parallel_fetch(args):
                     else:
                         failed += 1
                     pbar.update(1)
-        
+
         print(f"\n✓ Fetched: {fetched} | ✗ Failed: {failed}")
 
 
@@ -139,15 +137,16 @@ def cmd_analyze(args):
     if args.type == "stats":
         stats = generate_stats(args.data_dir)
         print(json.dumps(stats, indent=2))
-    
+
     elif args.type == "citations":
         cases_dir = Path(args.data_dir) / "cases"
         cases = []
         for f in cases_dir.glob("*.json"):
             with open(f) as fp:
                 cases.append(json.load(fp))
-        
+
         from legal_scraper.analytics.citations import analyze_citations
+
         results = analyze_citations(cases)
         print(json.dumps(results, indent=2, default=str))
 
@@ -163,67 +162,58 @@ Examples:
   python cli.py enumerate --year 2024
   python cli.py fetch --id case_001
   python cli.py analyze --type stats
-        """
+        """,
     )
     parser.add_argument(
-        "--adapter", "-a",
-        default="example",
-        help="Adapter to use (default: example)"
+        "--adapter", "-a", default="example", help="Adapter to use (default: example)"
     )
-    parser.add_argument(
-        "--data-dir", "-d",
-        default="data",
-        help="Data directory"
-    )
-    
+    parser.add_argument("--data-dir", "-d", default="data", help="Data directory")
+
     subparsers = parser.add_subparsers(dest="command", help="Command")
-    
+
     # Status
     sub = subparsers.add_parser("status", help="Show scraper status")
     sub.set_defaults(func=cmd_status)
-    
+
     # Search
     sub = subparsers.add_parser("search", help="Search for cases")
     sub.add_argument("--query", "-q", required=True, help="Search query")
     sub.add_argument("--limit", "-l", type=int, default=10, help="Max results")
     sub.add_argument("--output", "-o", help="Output file")
     sub.set_defaults(func=cmd_search)
-    
+
     # Enumerate
     sub = subparsers.add_parser("enumerate", help="List cases for a year")
     sub.add_argument("--year", "-y", type=int, required=True, help="Year")
     sub.set_defaults(func=cmd_enumerate)
-    
+
     # Fetch
     sub = subparsers.add_parser("fetch", help="Fetch case(s)")
     sub.add_argument("--id", help="Single case ID")
     sub.add_argument("--year", "-y", type=int, help="Fetch all for year")
     sub.add_argument("--limit", "-l", type=int, default=100, help="Max to fetch")
     sub.set_defaults(func=cmd_fetch)
-    
+
     # Parallel Fetch
     sub = subparsers.add_parser("parallel-fetch", help="Fetch cases in parallel")
     sub.add_argument("--year", "-y", type=int, required=True, help="Year")
     sub.add_argument("--limit", "-l", type=int, help="Max to fetch")
     sub.add_argument("--workers", "-w", type=int, default=5, help="Parallel workers (default: 5)")
     sub.set_defaults(func=cmd_parallel_fetch)
-    
+
     # Analyze
     sub = subparsers.add_parser("analyze", help="Run analytics")
     sub.add_argument(
-        "--type", "-t",
-        choices=["stats", "citations"],
-        required=True,
-        help="Analysis type"
+        "--type", "-t", choices=["stats", "citations"], required=True, help="Analysis type"
     )
     sub.set_defaults(func=cmd_analyze)
-    
+
     args = parser.parse_args()
-    
+
     if not args.command:
         parser.print_help()
         return 1
-    
+
     return args.func(args) or 0
 
 
