@@ -9,19 +9,17 @@ import argparse
 import json
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from dotenv import load_dotenv
+from tqdm import tqdm
+
+from legal_scraper import Scraper
+from legal_scraper.analytics import generate_stats
 
 # Load environment
 load_dotenv()
-
-from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: E402
-
-from tqdm import tqdm  # noqa: E402
-
-from legal_scraper import Scraper  # noqa: E402
-from legal_scraper.analytics import generate_stats  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
