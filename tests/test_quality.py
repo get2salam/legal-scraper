@@ -10,6 +10,14 @@ from pathlib import Path
 
 import pytest
 
+from legal_scraper.quality.dedup import (
+    ContentFingerprinter,
+    DuplicateDetector,
+)
+from legal_scraper.quality.reporter import (
+    QualityReporter,
+    generate_quality_report,
+)
 from legal_scraper.quality.validator import (
     CaseValidator,
     FieldSpec,
@@ -18,17 +26,6 @@ from legal_scraper.quality.validator import (
     check_text_quality,
     validate_case,
 )
-from legal_scraper.quality.dedup import (
-    ContentFingerprinter,
-    DuplicateDetector,
-    DuplicatePair,
-)
-from legal_scraper.quality.reporter import (
-    QualityReport,
-    QualityReporter,
-    generate_quality_report,
-)
-
 
 # ─── Fixtures ───────────────────────────────────────────────────────────
 
@@ -166,8 +163,7 @@ class TestCaseValidator:
         }
         result = validate_case(case)
         citation_issues = [
-            i for i in result.issues
-            if i.field == "citation" and i.severity != Severity.INFO
+            i for i in result.issues if i.field == "citation" and i.severity != Severity.INFO
         ]
         assert len(citation_issues) == 0
 
@@ -175,8 +171,7 @@ class TestCaseValidator:
         valid_case["custom_field"] = "something"
         result = validate_case(valid_case)
         info_issues = [
-            i for i in result.issues
-            if i.field == "custom_field" and i.severity == Severity.INFO
+            i for i in result.issues if i.field == "custom_field" and i.severity == Severity.INFO
         ]
         assert len(info_issues) == 1
 
@@ -184,10 +179,7 @@ class TestCaseValidator:
         valid_case["_scraped_at"] = "2024-01-01"
         valid_case["_internal_note"] = "test"
         result = validate_case(valid_case)
-        internal_issues = [
-            i for i in result.issues
-            if i.field.startswith("_")
-        ]
+        internal_issues = [i for i in result.issues if i.field.startswith("_")]
         assert len(internal_issues) == 0
 
     def test_completeness_score_range(self, sample_cases):
@@ -222,8 +214,7 @@ class TestCaseValidator:
         case = {"id": "test", "title": "Title", "text": "x" * 200}
         result = validator.validate(case)
         assert any(
-            i.field == "jurisdiction" and i.severity == Severity.ERROR
-            for i in result.issues
+            i.field == "jurisdiction" and i.severity == Severity.ERROR for i in result.issues
         )
 
     def test_remove_field_spec(self):
@@ -398,11 +389,9 @@ class TestDuplicateDetector:
 
         dups = detector.find_duplicates()
         # case-1 and case-2 should be detected
-        pair_ids = {(d.id_a, d.id_b) for d in dups}
+        {(d.id_a, d.id_b) for d in dups}
         has_near_dup = any(
-            ("case-1" in ids and "case-2" in ids) for ids in [
-                (d.id_a, d.id_b) for d in dups
-            ]
+            ("case-1" in ids and "case-2" in ids) for ids in [(d.id_a, d.id_b) for d in dups]
         )
         assert has_near_dup
 
@@ -416,10 +405,7 @@ class TestDuplicateDetector:
 
     def test_add_batch(self):
         detector = DuplicateDetector()
-        cases = [
-            {"id": f"case-{i}", "text": f"Case text number {i}. " * 20}
-            for i in range(5)
-        ]
+        cases = [{"id": f"case-{i}", "text": f"Case text number {i}. " * 20} for i in range(5)]
         detector.add_batch(cases)
         assert detector.stats()["total_indexed"] == 5
 
@@ -513,9 +499,7 @@ class TestQualityReporter:
         reporter = QualityReporter()
         report = reporter.analyze(sample_cases)
 
-        with tempfile.NamedTemporaryFile(
-            suffix=".json", delete=False, mode="w"
-        ) as f:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
             report.save(f.name)
             saved_path = Path(f.name)
 
@@ -557,10 +541,7 @@ class TestQualityReporter:
     def test_compare_reports(self):
         reporter = QualityReporter()
 
-        before_cases = [
-            {"id": f"c{i}", "title": f"Case {i}", "text": "Short"}
-            for i in range(5)
-        ]
+        before_cases = [{"id": f"c{i}", "title": f"Case {i}", "text": "Short"} for i in range(5)]
         after_cases = [
             {
                 "id": f"c{i}",
@@ -610,7 +591,7 @@ class TestGenerateQualityReport:
 
             # Generate with output
             output = Path(tmpdir) / "reports" / "quality.json"
-            report = generate_quality_report(tmpdir, output=output)
+            generate_quality_report(tmpdir, output=output)
 
             assert output.exists()
             with open(output) as f:

@@ -4,13 +4,11 @@ Unit tests for the HumanTiming module.
 All tests patch time.sleep (via conftest) so they run instantly.
 """
 
-import time
-from unittest.mock import patch, call
+from unittest.mock import patch
 
 import pytest
 
 from legal_scraper.core.timing import HumanTiming
-
 
 # ---------------------------------------------------------------------------
 # Initialisation
@@ -59,10 +57,12 @@ class TestDelay:
         t = HumanTiming()
         sleep_values = []
 
-        with patch("time.sleep", side_effect=lambda s: sleep_values.append(s)):
+        with (
+            patch("time.sleep", side_effect=lambda s: sleep_values.append(s)),
+            patch("random.random", return_value=1.0),
+        ):
             # Force no reading pause by mocking random
-            with patch("random.random", return_value=1.0):
-                t.delay()
+            t.delay()
 
         assert len(sleep_values) == 1
         assert t.min_delay <= sleep_values[0] <= t.max_delay
@@ -72,11 +72,13 @@ class TestDelay:
         t = HumanTiming()
         sleep_values = []
 
-        with patch("time.sleep", side_effect=lambda s: sleep_values.append(s)):
+        with (
+            patch("time.sleep", side_effect=lambda s: sleep_values.append(s)),
+            patch("random.random", return_value=0.01),
+            patch("random.uniform", return_value=45.0),
+        ):
             # Force reading pause (random < reading_pause_chance)
-            with patch("random.random", return_value=0.01):
-                with patch("random.uniform", return_value=45.0):
-                    t.delay()
+            t.delay()
 
         assert len(sleep_values) == 1
         assert sleep_values[0] == 45.0
@@ -139,8 +141,7 @@ class TestWait:
         """wait() should call both delay() and maybe_break()."""
         t = HumanTiming()
 
-        with patch.object(t, "delay") as mock_delay, \
-             patch.object(t, "maybe_break") as mock_break:
+        with patch.object(t, "delay") as mock_delay, patch.object(t, "maybe_break") as mock_break:
             t.wait()
             mock_delay.assert_called_once()
             mock_break.assert_called_once()
@@ -160,7 +161,6 @@ class TestReset:
 
     def test_reset_sets_new_threshold(self):
         t = HumanTiming()
-        old_threshold = t._next_break_at
         t.request_count = 100
         t.reset()
         # New threshold should be within break_min..break_max

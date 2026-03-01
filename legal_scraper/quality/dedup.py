@@ -11,22 +11,19 @@ import hashlib
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
 class DuplicatePair:
     """A pair of near-duplicate documents."""
+
     id_a: str
     id_b: str
     similarity: float
     method: str
 
     def __str__(self) -> str:
-        return (
-            f"{self.id_a} <-> {self.id_b} "
-            f"({self.similarity:.1%} similar, {self.method})"
-        )
+        return f"{self.id_a} <-> {self.id_b} ({self.similarity:.1%} similar, {self.method})"
 
 
 class ContentFingerprinter:
@@ -99,7 +96,7 @@ class ContentFingerprinter:
         fingerprint = 0
         for i in range(self.hash_bits):
             if vector[i] > 0:
-                fingerprint |= (1 << i)
+                fingerprint |= 1 << i
 
         return fingerprint
 
@@ -131,24 +128,21 @@ class ContentFingerprinter:
         """Normalize text for fingerprinting."""
         text = text.lower()
         # Remove extra whitespace
-        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r"\s+", " ", text)
         # Remove punctuation (keep alphanumeric + spaces)
-        text = re.sub(r'[^\w\s]', '', text)
+        text = re.sub(r"[^\w\s]", "", text)
         return text.strip()
 
     def _shingle(self, text: str) -> list[str]:
         """Generate character n-grams."""
         if len(text) < self.ngram_size:
             return [text]
-        return [
-            text[i:i + self.ngram_size]
-            for i in range(len(text) - self.ngram_size + 1)
-        ]
+        return [text[i : i + self.ngram_size] for i in range(len(text) - self.ngram_size + 1)]
 
     def _hash_shingle(self, shingle: str) -> int:
         """Hash a single shingle to hash_bits bits."""
-        h = hashlib.md5(shingle.encode('utf-8')).hexdigest()
-        return int(h, 16) % (2 ** self.hash_bits)
+        h = hashlib.md5(shingle.encode("utf-8")).hexdigest()
+        return int(h, 16) % (2**self.hash_bits)
 
 
 class DuplicateDetector:
@@ -197,15 +191,13 @@ class DuplicateDetector:
 
         # Exact content hash
         if text:
-            content_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
+            content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
             self._exact_hashes[case_id] = content_hash
 
         # SimHash fingerprint
         self._fingerprints[case_id] = self.fingerprinter.fingerprint(text)
 
-    def add_batch(
-        self, cases: list[dict], id_field: str = "id", text_field: str = "text"
-    ):
+    def add_batch(self, cases: list[dict], id_field: str = "id", text_field: str = "text"):
         """Add multiple cases at once."""
         for case in cases:
             case_id = case.get(id_field)
@@ -313,9 +305,7 @@ class DuplicateDetector:
         hash_groups: dict[str, list[str]] = defaultdict(list)
         for case_id, content_hash in self._exact_hashes.items():
             hash_groups[content_hash].append(case_id)
-        exact_groups = sum(
-            1 for g in hash_groups.values() if len(g) > 1
-        )
+        exact_groups = sum(1 for g in hash_groups.values() if len(g) > 1)
 
         return {
             "total_indexed": len(self._fingerprints),

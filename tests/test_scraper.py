@@ -8,9 +8,8 @@ so no real HTTP requests are made.
 
 import pytest
 
-from legal_scraper.core.scraper import Scraper, ADAPTERS
-from tests.conftest import MockAdapter, FailingAdapter, SAMPLE_SEARCH_RESULTS
-
+from legal_scraper.core.scraper import Scraper
+from tests.conftest import SAMPLE_SEARCH_RESULTS
 
 # ---------------------------------------------------------------------------
 # Initialisation
