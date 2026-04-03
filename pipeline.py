@@ -164,7 +164,7 @@ def run_pipeline(
     log_file = Path("data/logs/pipeline.log")
     log_file.parent.mkdir(parents=True, exist_ok=True)
     
-    with open(log_file, 'a') as f:
+    with open(log_file, 'a', encoding='utf-8') as f:
         f.write(f"\n{start_time.isoformat()} - Pipeline run\n")
         f.write(f"  Duration: {duration}\n")
         f.write(f"  PDFs: {initial_pdfs} → {final_pdfs}\n")

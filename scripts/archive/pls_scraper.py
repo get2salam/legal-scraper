@@ -56,16 +56,23 @@ PLS_PASS = os.environ.get("PLS_PASS", "")
 # Rate limiting
 DAILY_REQUEST_LIMIT = 500  # Authorized access, scrape responsibly
 # More human-like timing (variable delays)
-MIN_DELAY_SECONDS = 5
-MAX_DELAY_SECONDS = 20
-READING_PAUSE_CHANCE = 0.12  # 12% chance of longer "reading" pause
+MIN_DELAY_SECONDS = 8
+MAX_DELAY_SECONDS = 15
+READING_PAUSE_CHANCE = 0.15  # 15% chance of longer "reading" pause
 READING_PAUSE_MIN = 30
-READING_PAUSE_MAX = 90
+READING_PAUSE_MAX = 60
 # Variable breaks (not fixed intervals)
-BREAK_AFTER_REQUESTS_MIN = 22
-BREAK_AFTER_REQUESTS_MAX = 38
-BREAK_DURATION_MIN = 90
-BREAK_DURATION_MAX = 180
+BREAK_AFTER_REQUESTS_MIN = 15
+BREAK_AFTER_REQUESTS_MAX = 25
+BREAK_DURATION_MIN = 120
+BREAK_DURATION_MAX = 300
+
+# Rate limit detection thresholds
+RESPONSE_TIME_THRESHOLD = 5.0  # Seconds - if response takes longer, might be throttling
+CONSECUTIVE_SLOW_THRESHOLD = 3  # Number of slow responses before backing off
+IP_BLOCK_COOLDOWN_MINUTES = 30  # Wait time when IP blocked (403)
+MAX_403_RETRIES = 2  # Max 403s before assuming IP block (not session issue)
+REQUESTS_PER_HOUR_SAFE = 40  # Target max requests per hour to stay under radar
 
 # Data directories
 DATA_DIR = Path("data/pakistanlawsite")
@@ -123,7 +130,7 @@ class ProgressTracker:
 
     def _load(self) -> dict:
         if self.filepath.exists():
-            with open(self.filepath) as f:
+            with open(self.filepath, encoding='utf-8') as f:
                 return json.load(f)
         return {
             "created": datetime.now().isoformat(),
@@ -137,7 +144,7 @@ class ProgressTracker:
 
     def save(self):
         self.data["last_updated"] = datetime.now().isoformat()
-        with open(self.filepath, 'w') as f:
+        with open(self.filepath, 'w', encoding='utf-8') as f:
             json.dump(self.data, f, indent=2, ensure_ascii=False)
 
     def get_today_requests(self) -> int:
@@ -195,6 +202,124 @@ class ProgressTracker:
         self.save()
 
 
+# ─── Rate Limit Tracker ──────────────────────────────────────────────────────
+
+class RateLimitTracker:
+    """Track request patterns to detect and avoid rate limiting."""
+    
+    def __init__(self, filepath: Path = DATA_DIR / "rate_limit_stats.json"):
+        self.filepath = filepath
+        self.data = self._load()
+        self.consecutive_slow = 0
+        self.consecutive_403 = 0
+        self.ip_blocked_until = None
+    
+    def _load(self) -> dict:
+        if self.filepath.exists():
+            with open(self.filepath, encoding='utf-8') as f:
+                return json.load(f)
+        return {
+            "hourly_requests": {},  # {"2026-02-06T07": 15, ...}
+            "response_times": [],   # Last 100 response times
+            "blocks_detected": [],  # Timestamps of 403/429 events
+            "last_block": None,
+            "total_requests": 0,
+            "total_blocks": 0,
+        }
+    
+    def save(self):
+        # Keep only last 100 response times
+        self.data["response_times"] = self.data["response_times"][-100:]
+        with open(self.filepath, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, indent=2, ensure_ascii=False)
+    
+    def log_request(self, response_time: float, status_code: int):
+        """Log a request and its outcome."""
+        hour_key = datetime.now().strftime("%Y-%m-%dT%H")
+        self.data["hourly_requests"][hour_key] = self.data["hourly_requests"].get(hour_key, 0) + 1
+        self.data["response_times"].append(response_time)
+        self.data["total_requests"] += 1
+        
+        # Track slow responses
+        if response_time > RESPONSE_TIME_THRESHOLD:
+            self.consecutive_slow += 1
+            logger.warning(f"Slow response: {response_time:.1f}s (consecutive: {self.consecutive_slow})")
+        else:
+            self.consecutive_slow = 0
+        
+        # Track 403s
+        if status_code == 403:
+            self.consecutive_403 += 1
+            self.data["total_blocks"] += 1
+            self.data["blocks_detected"].append(datetime.now().isoformat())
+            self.data["last_block"] = datetime.now().isoformat()
+        elif status_code == 200:
+            self.consecutive_403 = 0
+        
+        self.save()
+    
+    def get_current_hour_requests(self) -> int:
+        """Get number of requests made in the current hour."""
+        hour_key = datetime.now().strftime("%Y-%m-%dT%H")
+        return self.data["hourly_requests"].get(hour_key, 0)
+    
+    def get_avg_response_time(self) -> float:
+        """Get average response time from recent requests."""
+        times = self.data["response_times"]
+        if not times:
+            return 0.0
+        return sum(times) / len(times)
+    
+    def should_back_off(self) -> tuple[bool, str]:
+        """Check if we should slow down or pause."""
+        # IP blocked cooldown
+        if self.ip_blocked_until:
+            if datetime.now() < self.ip_blocked_until:
+                remaining = (self.ip_blocked_until - datetime.now()).seconds // 60
+                return True, f"IP blocked - cooling down ({remaining}m remaining)"
+            else:
+                self.ip_blocked_until = None
+                logger.info("IP block cooldown complete - resuming")
+        
+        # Too many 403s = IP block detected
+        if self.consecutive_403 >= MAX_403_RETRIES:
+            self.ip_blocked_until = datetime.now() + timedelta(minutes=IP_BLOCK_COOLDOWN_MINUTES)
+            self.consecutive_403 = 0
+            return True, f"IP BLOCK DETECTED - pausing for {IP_BLOCK_COOLDOWN_MINUTES} minutes"
+        
+        # Consecutive slow responses = throttling
+        if self.consecutive_slow >= CONSECUTIVE_SLOW_THRESHOLD:
+            return True, "Throttling detected (slow responses) - taking extended break"
+        
+        # Hourly rate check
+        hourly = self.get_current_hour_requests()
+        if hourly >= REQUESTS_PER_HOUR_SAFE:
+            return True, f"Hourly limit reached ({hourly}/{REQUESTS_PER_HOUR_SAFE}) - waiting for next hour"
+        
+        return False, ""
+    
+    def mark_ip_blocked(self):
+        """Explicitly mark IP as blocked."""
+        self.ip_blocked_until = datetime.now() + timedelta(minutes=IP_BLOCK_COOLDOWN_MINUTES)
+        self.data["last_block"] = datetime.now().isoformat()
+        self.data["total_blocks"] += 1
+        self.save()
+        logger.error(f"IP BLOCKED - Entering {IP_BLOCK_COOLDOWN_MINUTES} minute cooldown")
+    
+    def get_stats(self) -> dict:
+        """Get current rate limit stats."""
+        return {
+            "current_hour_requests": self.get_current_hour_requests(),
+            "avg_response_time": f"{self.get_avg_response_time():.2f}s",
+            "consecutive_slow": self.consecutive_slow,
+            "consecutive_403": self.consecutive_403,
+            "total_requests": self.data["total_requests"],
+            "total_blocks": self.data["total_blocks"],
+            "last_block": self.data.get("last_block"),
+            "ip_blocked_until": self.ip_blocked_until.isoformat() if self.ip_blocked_until else None,
+        }
+
+
 # ─── PLS Scraper ─────────────────────────────────────────────────────────────
 
 class PLSScraper:
@@ -203,6 +328,7 @@ class PLSScraper:
     def __init__(self):
         self.session = requests.Session()
         self.progress = ProgressTracker()
+        self.rate_tracker = RateLimitTracker()
         self.request_count = 0
         self.authenticated = False
 
@@ -330,9 +456,34 @@ class PLSScraper:
 
     def _request(self, method: str, url: str, data: dict = None,
                  params: dict = None, retries: int = 3) -> Optional[requests.Response]:
-        """Make a rate-limited request."""
+        """Make a rate-limited request with advanced detection."""
         if not self._check_limit():
             return None
+
+        # Check rate limit tracker for backoff conditions
+        should_back_off, reason = self.rate_tracker.should_back_off()
+        if should_back_off:
+            logger.warning(f"BACKOFF: {reason}")
+            if "IP BLOCK" in reason or "IP blocked" in reason:
+                # Wait for the cooldown
+                wait_mins = IP_BLOCK_COOLDOWN_MINUTES
+                logger.info(f"Waiting {wait_mins} minutes for IP block cooldown...")
+                time.sleep(wait_mins * 60)
+                # Re-check after cooldown
+                should_back_off, reason = self.rate_tracker.should_back_off()
+                if should_back_off:
+                    logger.error("Still blocked after cooldown - aborting")
+                    return None
+            elif "Hourly limit" in reason:
+                # Wait until next hour
+                mins_to_next_hour = 60 - datetime.now().minute
+                logger.info(f"Waiting {mins_to_next_hour} minutes until next hour...")
+                time.sleep(mins_to_next_hour * 60 + 60)  # +1 min buffer
+            elif "Throttling" in reason:
+                # Extended break for throttling
+                logger.info("Taking 10 minute break due to throttling...")
+                time.sleep(600)
+                self.rate_tracker.consecutive_slow = 0
 
         self._delay()
         self._maybe_break()
@@ -342,32 +493,104 @@ class PLSScraper:
 
         for attempt in range(retries):
             try:
+                start_time = time.time()
+                
                 if method == "GET":
                     resp = self.session.get(url, params=params, timeout=30)
                 else:
                     resp = self.session.post(url, data=data, timeout=30)
+                
+                response_time = time.time() - start_time
+                
+                # Log to rate tracker
+                self.rate_tracker.log_request(response_time, resp.status_code)
 
+                # Handle 429 - explicit rate limit
                 if resp.status_code == 429:
-                    logger.warning("Rate limited! Waiting 10 minutes...")
-                    time.sleep(600)
+                    logger.warning("RATE LIMITED (429)! Waiting 15 minutes...")
+                    retry_after = resp.headers.get('Retry-After', 900)
+                    try:
+                        wait_time = int(retry_after)
+                    except ValueError:
+                        wait_time = 900
+                    time.sleep(wait_time)
                     continue
 
+                # Handle 403 - could be session issue OR IP block
                 if resp.status_code == 403:
-                    logger.warning("403 Forbidden — session may have expired. Re-authenticating...")
-                    self.login()
-                    continue
+                    # Check if it's a full page block (short response = block page)
+                    if len(resp.text) < 2000 and "403" in resp.text and "Forbidden" in resp.text:
+                        logger.error("IP BLOCK DETECTED (403 block page)")
+                        self.rate_tracker.mark_ip_blocked()
+                        # Don't retry - let the next call handle the cooldown
+                        return None
+                    else:
+                        # Might be session expiry - try re-auth once
+                        if attempt == 0:
+                            logger.warning("403 Forbidden - attempting re-authentication...")
+                            if self.login():
+                                continue
+                        logger.error("403 persists after re-auth - possible IP block")
+                        self.rate_tracker.mark_ip_blocked()
+                        return None
 
                 resp.raise_for_status()
                 self.progress.increment_requests()
+                
+                # Log success with timing info
+                if response_time > RESPONSE_TIME_THRESHOLD:
+                    logger.warning(f"Request succeeded but slow ({response_time:.1f}s)")
+                
                 return resp
 
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"Request attempt {attempt + 1} failed: {e}")
+            except requests.exceptions.Timeout:
+                logger.warning(f"Request timeout (attempt {attempt + 1}/{retries})")
+                self.rate_tracker.log_request(30.0, 0)  # Log timeout as slow
                 if attempt < retries - 1:
-                    time.sleep(15 * (attempt + 1))
+                    time.sleep(30 * (attempt + 1))  # Exponential backoff
+                    
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Request failed (attempt {attempt + 1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    time.sleep(15 * (attempt + 1))  # Exponential backoff
 
         logger.error(f"Failed after {retries} attempts: {url}")
         return None
+    
+    def check_ip_status(self) -> bool:
+        """Quick health check - can we reach PLS without being blocked?"""
+        logger.info("Checking IP status with PLS...")
+        try:
+            resp = self.session.get(f"{BASE_URL}/Login", timeout=30)
+            if resp.status_code == 403:
+                logger.error("IP CHECK FAILED: Still blocked (403)")
+                return False
+            elif resp.status_code == 200:
+                logger.info("IP CHECK PASSED: Access OK")
+                return True
+            else:
+                logger.warning(f"IP CHECK UNCLEAR: Status {resp.status_code}")
+                return resp.status_code < 400
+        except requests.exceptions.RequestException as e:
+            logger.error(f"IP CHECK ERROR: {e}")
+            return False
+    
+    def print_rate_stats(self):
+        """Print current rate limiting stats."""
+        stats = self.rate_tracker.get_stats()
+        logger.info("=" * 50)
+        logger.info("RATE LIMIT STATS")
+        logger.info(f"  Requests this hour: {stats['current_hour_requests']}/{REQUESTS_PER_HOUR_SAFE}")
+        logger.info(f"  Avg response time: {stats['avg_response_time']}")
+        logger.info(f"  Consecutive slow: {stats['consecutive_slow']}/{CONSECUTIVE_SLOW_THRESHOLD}")
+        logger.info(f"  Consecutive 403s: {stats['consecutive_403']}/{MAX_403_RETRIES}")
+        logger.info(f"  Total requests: {stats['total_requests']}")
+        logger.info(f"  Total blocks: {stats['total_blocks']}")
+        if stats['last_block']:
+            logger.info(f"  Last block: {stats['last_block']}")
+        if stats['ip_blocked_until']:
+            logger.info(f"  IP blocked until: {stats['ip_blocked_until']}")
+        logger.info("=" * 50)
 
     # ── Parsing ───────────────────────────────────────────────────────────
 
@@ -719,6 +942,7 @@ class PLSScraper:
         self.progress.mark_enumerated(book, year, case_names)
 
         # Save full search results
+        # Save full search results
         results_file = SEARCH_DIR / f"{book}_{year}.json"
         with open(results_file, 'w', encoding='utf-8') as f:
             json.dump(all_cases, f, indent=2, ensure_ascii=False)
@@ -900,6 +1124,12 @@ Examples:
     daily_p.add_argument("--book", default=None, help="Specific book to enumerate")
     daily_p.add_argument("--year", type=int, default=None, help="Specific year")
 
+    # ip-check - Check if IP is blocked
+    sub.add_parser("ip-check", help="Check if IP is blocked by PLS")
+    
+    # rate-stats - Show rate limit statistics
+    sub.add_parser("rate-stats", help="Show rate limiting statistics")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -910,6 +1140,19 @@ Examples:
 
     if args.command == "status":
         scraper.show_status()
+        return
+    
+    if args.command == "ip-check":
+        if scraper.check_ip_status():
+            print("\n[OK] IP is NOT blocked - PLS is accessible")
+            sys.exit(0)
+        else:
+            print("\n[BLOCKED] IP appears to be blocked by PLS")
+            print(f"Try again in {IP_BLOCK_COOLDOWN_MINUTES} minutes, or use a different IP (VPN/hotspot)")
+            sys.exit(1)
+    
+    if args.command == "rate-stats":
+        scraper.print_rate_stats()
         return
 
     # All other commands need authentication

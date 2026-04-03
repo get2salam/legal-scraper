@@ -323,7 +323,7 @@ class EmbeddingGenerator:
         ids = [doc.id for doc in all_documents if doc.embedding]
         
         np.save(vectors_file, vectors)
-        with open(ids_file, 'w') as f:
+        with open(ids_file, 'w', encoding='utf-8') as f:
             json.dump(ids, f)
         
         logger.info(f"Saved vectors to {vectors_file} (shape: {vectors.shape})")

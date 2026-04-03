@@ -1,258 +1,314 @@
 #!/usr/bin/env python3
 """
-Daily Safe Scraper for Pakistani Legal Data
-- Respects rate limits
-- Takes breaks
-- Tracks progress
-- Won't get us banned
+Daily Scraper - One Year Per Day
+=================================
+Autonomous scraper that processes one year per day.
+Tracks progress and automatically moves to next year.
+
+Features:
+- PLS operating hours check (7 AM - 9 PM PKT)
+- Automatic verification after scraping
+- Data cleaning post-scrape
+- Windows notifications
+- Pipeline status reporting
+
+Run via Windows Task Scheduler at your preferred time.
 """
 
-import argparse
 import json
-import logging
+import subprocess
+import sys
 import os
-import random
-import time
-from datetime import datetime
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
-import requests
-from bs4 import BeautifulSoup
-from tqdm import tqdm
+# Configuration
+SCRAPER_DIR = Path(__file__).parent
+SCHEDULE_FILE = SCRAPER_DIR / "daily_schedule.json"
+LOG_FILE = SCRAPER_DIR / "daily_scraper.log"
+PROGRESS_FILE = SCRAPER_DIR / "data_v2" / "progress.json"
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Years to scrape (newest first)
+ALL_YEARS = list(range(2025, 1946, -1))  # 2025 down to 1947
 
-# Rotating user agents
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-]
+# Reporters
+REPORTERS = ["SCMR", "PLD", "MLD", "CLC", "PCrLJ", "PTD", "PLC", "YLR", "CLD", "GBLR"]
 
-class SafeScraper:
-    """Rate-limited scraper that won't get us banned"""
-    
-    def __init__(self, progress_file: str = "progress.json"):
-        self.progress_file = Path(progress_file)
-        self.progress = self._load_progress()
-        self.session = requests.Session()
-        self.request_count = 0
-        
-    def _load_progress(self) -> dict:
-        if self.progress_file.exists():
-            with open(self.progress_file) as f:
-                return json.load(f)
-        return {}
-    
-    def _save_progress(self):
-        with open(self.progress_file, 'w') as f:
-            json.dump(self.progress, f, indent=2)
-    
-    def _get_headers(self) -> dict:
-        return {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-        }
-    
-    def _safe_delay(self):
-        """Random delay between requests"""
-        settings = self.progress.get('settings', {})
-        min_delay = settings.get('min_delay_seconds', 3)
-        max_delay = settings.get('max_delay_seconds', 8)
-        delay = random.uniform(min_delay, max_delay)
-        logger.debug(f"Waiting {delay:.1f}s...")
-        time.sleep(delay)
-    
-    def _maybe_take_break(self):
-        """Take a break every N requests"""
-        self.request_count += 1
-        settings = self.progress.get('settings', {})
-        break_after = settings.get('break_after_requests', 50)
-        break_duration = settings.get('break_duration_minutes', 5)
-        
-        if self.request_count > 0 and self.request_count % break_after == 0:
-            logger.info(f"Taking a {break_duration} minute break after {self.request_count} requests...")
-            time.sleep(break_duration * 60)
-    
-    def fetch(self, url: str, max_retries: int = 3) -> requests.Response:
-        """Fetch URL with rate limiting and retries"""
-        self._safe_delay()
-        self._maybe_take_break()
-        
-        for attempt in range(max_retries):
-            try:
-                self.session.headers.update(self._get_headers())
-                response = self.session.get(url, timeout=30)
-                
-                if response.status_code == 429:  # Rate limited
-                    logger.warning("Rate limited! Waiting 5 minutes...")
-                    time.sleep(300)
-                    continue
-                
-                response.raise_for_status()
-                return response
-                
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"Attempt {attempt + 1} failed: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(10 * (attempt + 1))  # Exponential backoff
-        
-        raise Exception(f"Failed to fetch {url} after {max_retries} attempts")
-    
-    def download_pdf(self, url: str, output_path: Path) -> bool:
-        """Download a PDF file"""
-        if output_path.exists():
-            logger.debug(f"Already exists: {output_path}")
-            return True
-        
+# Safety settings
+MAX_RUNTIME_HOURS = 8  # Stop after this many hours (safety limit)
+SESSION_BREAK_MINUTES = 30  # Break every N cases
+SESSION_BREAK_AFTER_CASES = 500  # Take break after this many cases
+
+# PLS Operating Hours (PKT = UTC+5)
+PLS_OPEN_HOUR = 7   # 7 AM PKT
+PLS_CLOSE_HOUR = 21  # 9 PM PKT
+PKT_OFFSET = timedelta(hours=5)
+
+# Pipeline status reporting (optional)
+try:
+    from pipeline_status import PipelineStatusReporter, ScriptType
+    _status_reporter = PipelineStatusReporter(ScriptType.SCRAPER, "daily_scraper")
+    HAS_STATUS_REPORTER = True
+except ImportError:
+    _status_reporter = None
+    HAS_STATUS_REPORTER = False
+
+
+def log(msg: str):
+    """Log with timestamp."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {msg}"
+    print(line)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def is_pls_open() -> bool:
+    """Check if PLS is within operating hours - DISABLED for 24/7 scraping."""
+    return True  # 24/7 aggressive scraping mode
+
+
+def get_pkt_time_str() -> str:
+    """Get current PKT time as string."""
+    utc_now = datetime.now(timezone.utc)
+    pkt_now = utc_now + PKT_OFFSET
+    return pkt_now.strftime("%H:%M PKT")
+
+
+def load_schedule() -> dict:
+    """Load schedule tracking file."""
+    if SCHEDULE_FILE.exists():
         try:
-            response = self.fetch(url)
-            
-            if 'application/pdf' in response.headers.get('content-type', ''):
-                with open(output_path, 'wb') as f:
-                    f.write(response.content)
-                logger.info(f"Downloaded: {output_path.name}")
-                return True
-            else:
-                logger.warning(f"Not a PDF: {url}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Failed to download {url}: {e}")
+            return json.loads(SCHEDULE_FILE.read_text(encoding='utf-8'))
+        except:
+            pass
+    return {
+        "current_year": None,
+        "completed_years": [],
+        "started_at": None,
+        "last_run": None
+    }
+
+
+def save_schedule(schedule: dict):
+    """Save schedule tracking file."""
+    schedule["last_run"] = datetime.now().isoformat()
+    SCHEDULE_FILE.write_text(json.dumps(schedule, indent=2, ensure_ascii=False), encoding='utf-8')
+
+
+def load_progress() -> dict:
+    """Load scraper progress."""
+    if PROGRESS_FILE.exists():
+        try:
+            return json.loads(PROGRESS_FILE.read_text(encoding='utf-8'))
+        except:
+            pass
+    return {"completed_searches": [], "cases_fetched": [], "total_cases": 0}
+
+
+def is_year_complete(year: int) -> bool:
+    """Check if all reporters for a year are done."""
+    progress = load_progress()
+    completed = progress.get("completed_searches", [])
+    for reporter in REPORTERS:
+        if f"{year}-{reporter}" not in completed:
             return False
+    return True
+
+
+def get_next_year(schedule: dict) -> int | None:
+    """Get the next year to scrape."""
+    completed = set(schedule.get("completed_years", []))
+    for year in ALL_YEARS:
+        if year not in completed:
+            # Double-check with progress file
+            if not is_year_complete(year):
+                return year
+            else:
+                # Year is done, add to completed
+                if year not in completed:
+                    schedule["completed_years"].append(year)
+    return None
+
+
+def run_scraper(year: int) -> bool:
+    """Run the scraper for a specific year."""
+    log(f"Starting scraper for year {year}...")
     
-    def run_daily_pakistan_code(self, limit: int = None):
-        """Run daily scrape of Pakistan Code PDFs"""
-        source = 'pakistan_code'
-        daily_limit = limit or self.progress.get(source, {}).get('daily_limit', 20)
-        
-        # Load laws
-        laws_file = Path("data/raw/laws.json")
-        if not laws_file.exists():
-            logger.error("No laws.json found. Run scraper.py list first.")
-            return
-        
-        with open(laws_file) as f:
-            laws = json.load(f)
-        
-        # Find laws without downloaded PDFs
-        pdf_dir = Path("data/raw/pdfs")
-        pdf_dir.mkdir(parents=True, exist_ok=True)
-        
-        downloaded = 0
-        for law in tqdm(laws, desc="Checking laws"):
-            if downloaded >= daily_limit:
-                logger.info(f"Daily limit ({daily_limit}) reached. Stopping.")
-                break
-            
-            # Check if already downloaded
-            safe_title = ''.join(c for c in law.get('title', 'unknown')[:50] if c.isalnum() or c in ' _-')
-            safe_title = safe_title.strip().replace(' ', '_')
-            year = law.get('year', 'unknown')
-            filename = f"{year}_{safe_title}.pdf"
-            filepath = pdf_dir / filename
-            
-            if filepath.exists():
-                continue
-            
-            # Try to find and download PDF
-            page_url = law.get('url')
-            if not page_url:
-                continue
-            
-            try:
-                # Fetch the law page
-                response = self.fetch(page_url)
-                soup = BeautifulSoup(response.text, 'lxml')
-                
-                # Find PDF link
-                pdf_link = soup.find('a', href=lambda x: x and '.pdf' in x.lower())
-                if pdf_link:
-                    pdf_url = pdf_link.get('href')
-                    if not pdf_url.startswith('http'):
-                        from urllib.parse import urljoin
-                        pdf_url = urljoin(page_url, pdf_url)
-                    
-                    if self.download_pdf(pdf_url, filepath):
-                        downloaded += 1
-                        law['local_pdf'] = str(filepath)
-            
-            except Exception as e:
-                logger.warning(f"Error processing {law.get('title', 'unknown')[:30]}: {e}")
-        
-        # Update progress
-        self.progress[source]['pdfs_downloaded'] = sum(
-            1 for f in pdf_dir.glob('*.pdf')
+    try:
+        # Run scraper as subprocess
+        result = subprocess.run(
+            [sys.executable, "pls_scraper_v2.py", "scrape", "--year", str(year)],
+            cwd=SCRAPER_DIR,
+            timeout=MAX_RUNTIME_HOURS * 3600,  # Convert hours to seconds
+            capture_output=False  # Let output go to console/log
         )
-        self.progress[source]['last_run'] = datetime.now().isoformat()
         
-        # Log the daily run
-        self.progress.setdefault('daily_logs', []).append({
-            'date': datetime.now().strftime('%Y-%m-%d'),
-            'source': source,
-            'downloaded': downloaded,
-            'total_pdfs': self.progress[source]['pdfs_downloaded']
-        })
-        
-        self._save_progress()
-        
-        # Save updated laws
-        with open(laws_file, 'w', encoding='utf-8') as f:
-            json.dump(laws, f, indent=2, ensure_ascii=False)
-        
-        logger.info(f"Daily scrape complete. Downloaded {downloaded} PDFs.")
-        logger.info(f"Total PDFs: {self.progress[source]['pdfs_downloaded']}")
-    
-    def show_status(self):
-        """Show current progress"""
-        print("\n" + "="*50)
-        print("SCRAPING PROGRESS")
-        print("="*50)
-        
-        for source in ['pakistan_code', 'na_acts', 'pakistanlawsite']:
-            data = self.progress.get(source, {})
-            print(f"\n{source}:")
-            print(f"  Total discovered: {data.get('total_discovered') or data.get('total_estimated') or 'Unknown'}")
-            print(f"  PDFs downloaded:  {data.get('pdfs_downloaded', 0)}")
-            print(f"  Texts extracted:  {data.get('texts_extracted', 0)}")
-            print(f"  Last run:         {data.get('last_run', 'Never')}")
-            print(f"  Daily limit:      {data.get('daily_limit', 'N/A')}")
-        
-        print("\n" + "="*50)
+        if result.returncode == 0:
+            log(f"Scraper completed successfully for year {year}")
+            return True
+        else:
+            log(f"Scraper exited with code {result.returncode} for year {year}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        log(f"Scraper timed out after {MAX_RUNTIME_HOURS} hours for year {year}")
+        return False
+    except KeyboardInterrupt:
+        log("Scraper interrupted by user")
+        return False
+    except Exception as e:
+        log(f"Error running scraper: {e}")
+        return False
+
+
+def run_data_cleaner() -> tuple:
+    """Run the data cleaner on all files."""
+    log("Running data cleaner...")
+    try:
+        from data_cleaner import process_all, DATA_DIR
+        success, skipped, failed = process_all(DATA_DIR, overwrite=False)
+        log(f"Data cleaner complete: {success} cleaned, {skipped} skipped, {failed} failed")
+        return success, skipped, failed
+    except Exception as e:
+        log(f"Data cleaner error: {e}")
+        return 0, 0, 0
+
+
+def run_verification(year: int, fix: bool = True) -> bool:
+    """
+    Run verification for a specific year after scraping.
+    Returns True if verification passed (no missing cases).
+    """
+    log(f"Running verification for year {year}...")
+    try:
+        from verify_scraper import verify_after_scrape
+        success = verify_after_scrape(year, fix=fix)
+        if success:
+            log(f"Verification passed for year {year}")
+        else:
+            log(f"Verification found issues for year {year} (check audit report)")
+        return success
+    except Exception as e:
+        log(f"Verification error: {e}")
+        return False
+
+
+def send_notification(title: str, message: str):
+    """Send a notification (Windows toast)."""
+    try:
+        # Try PowerShell toast notification
+        ps_script = f'''
+        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+        $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+        $textNodes = $template.GetElementsByTagName("text")
+        $textNodes.Item(0).AppendChild($template.CreateTextNode("{title}")) | Out-Null
+        $textNodes.Item(1).AppendChild($template.CreateTextNode("{message}")) | Out-Null
+        $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("PLS Scraper").Show($toast)
+        '''
+        subprocess.run(["powershell", "-Command", ps_script], capture_output=True)
+    except:
+        pass  # Notification is optional
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Daily Safe Scraper')
-    parser.add_argument('action', choices=['status', 'pakistan-code', 'na', 'all'],
-                       help='Action to perform')
-    parser.add_argument('--limit', type=int, help='Override daily limit')
+    log("=" * 60)
+    log("Daily Scraper - Starting")
+    log("=" * 60)
     
-    args = parser.parse_args()
+    # Check PLS operating hours
+    if not is_pls_open():
+        log(f"PLS is closed (current time: {get_pkt_time_str()})")
+        log(f"Operating hours: {PLS_OPEN_HOUR}:00 - {PLS_CLOSE_HOUR}:00 PKT")
+        log("Scraper will wait for operating hours or exit.")
+        send_notification("PLS Scraper", f"Outside operating hours ({get_pkt_time_str()}). Waiting...")
+        # Note: The actual scraper (pls_scraper_v2) will wait for operating hours
+    else:
+        log(f"PLS is open (current time: {get_pkt_time_str()})")
     
-    scraper = SafeScraper()
+    # Load schedule
+    schedule = load_schedule()
     
-    if args.action == 'status':
-        scraper.show_status()
+    # Get next year to scrape
+    year = get_next_year(schedule)
     
-    elif args.action == 'pakistan-code':
-        scraper.run_daily_pakistan_code(limit=args.limit)
+    if year is None:
+        log("All years completed! Nothing to do.")
+        send_notification("PLS Scraper", "All years completed!")
+        if HAS_STATUS_REPORTER and _status_reporter:
+            _status_reporter.complete(success=True, message="All years completed")
+        return
     
-    elif args.action == 'na':
-        logger.info("NA scraping not yet implemented")
+    log(f"Today's target: {year}")
+    log(f"Completed years: {len(schedule.get('completed_years', []))}/{len(ALL_YEARS)}")
     
-    elif args.action == 'all':
-        logger.info("Running all daily scrapes...")
-        scraper.run_daily_pakistan_code(limit=args.limit)
+    # Report status to orchestrator
+    if HAS_STATUS_REPORTER and _status_reporter:
+        _status_reporter.start(task=f"Scraping year {year}", year=year)
+    
+    # Check if year already in progress
+    if schedule.get("current_year") == year:
+        log(f"Resuming year {year} from previous run")
+    else:
+        schedule["current_year"] = year
+        schedule["started_at"] = datetime.now().isoformat()
+        save_schedule(schedule)
+    
+    # Send start notification
+    send_notification("PLS Scraper Started", f"Scraping year {year}")
+    
+    # Run scraper
+    success = run_scraper(year)
+    
+    # Check if year is complete
+    if is_year_complete(year):
+        log(f"Year {year} COMPLETED!")
+        if year not in schedule.get("completed_years", []):
+            schedule.setdefault("completed_years", []).append(year)
+        schedule["current_year"] = None
+        save_schedule(schedule)
+        
+        # Run verification (with auto-fix for missing cases)
+        log("Starting post-scrape verification...")
+        verification_ok = run_verification(year, fix=True)
+        
+        # Run data cleaner
+        log("Starting post-scrape data cleaning...")
+        cleaned, skipped, failed = run_data_cleaner()
+        
+        # Summary
+        progress = load_progress()
+        total = progress.get("total_cases", 0)
+        status = "✓" if verification_ok else "⚠"
+        send_notification("PLS Scraper Complete", f"{status} Year {year} done! Total: {total} cases, {cleaned} cleaned")
+        
+        # Report completion to orchestrator
+        if HAS_STATUS_REPORTER and _status_reporter:
+            _status_reporter.complete(
+                success=verification_ok,
+                message=f"Year {year} complete: {total} cases, {cleaned} cleaned"
+            )
+    else:
+        log(f"Year {year} not yet complete (will resume tomorrow)")
+        save_schedule(schedule)
+        send_notification("PLS Scraper Paused", f"Year {year} partial - will resume")
+        
+        # Report partial completion
+        if HAS_STATUS_REPORTER and _status_reporter:
+            progress = load_progress()
+            _status_reporter.progress_update(
+                len(progress.get("completed_searches", [])),
+                len(REPORTERS),
+                f"Year {year} partial - will resume"
+            )
+    
+    # Final stats
+    progress = load_progress()
+    log(f"Total cases in database: {progress.get('total_cases', 0)}")
+    log("Daily Scraper - Finished")
+    log("=" * 60)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
